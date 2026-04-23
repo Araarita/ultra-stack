@@ -6,6 +6,7 @@ import logging
 from dotenv import load_dotenv
 from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from pathlib import Path
 from letta_client import Letta, MessageCreate
 from shared.llm_router.router import get_current_mode, set_mode, get_mode_status, list_all_modes, MODE_INFO
 
@@ -104,6 +105,7 @@ async def handle_message(update, context):
 # COMANDOS DE CREWS
 # ============================================
 from crews.research.research_crew import run_research
+from crews.code.code_crew import run_code_task
 import threading
 import asyncio
 
@@ -172,6 +174,65 @@ async def send_report(bot, chat_id, topic, result, path):
             print(f"Error enviando chunk: {e}")
 
 
+
+
+async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Code Crew - desarrolla código production-ready."""
+    if not is_owner(update):
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: /code <descripción de la tarea>\n\n"
+            "Ejemplos:\n"
+            "- /code Cache LRU thread-safe con TTL\n"
+            "- /code API REST para gestión de tareas\n"
+            "- /code Script backup diario a S3"
+        )
+        return
+    
+    task_desc = " ".join(context.args)
+    
+    await update.message.reply_text(
+        f"Code Crew activado\n\n"
+        f"Tarea: {task_desc}\n\n"
+        f"Pipeline:\n"
+        f"1. Architect - diseña arquitectura\n"
+        f"2. Researcher - busca best practices\n"
+        f"3. Developer - implementa código\n"
+        f"4. Tester - genera tests pytest\n"
+        f"5. Reviewer - review final production-ready\n\n"
+        f"Tiempo estimado: 5-12 minutos\n"
+        f"Te aviso cuando termine con el código completo"
+    )
+    
+    def run_in_thread():
+        try:
+            result = run_code_task(task_desc)
+            
+            safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in task_desc)[:60]
+            code_dir = Path("/opt/ultra/data/codigo")
+            code_dir.mkdir(parents=True, exist_ok=True)
+            path = code_dir / f"{safe_name}.md"
+            path.write_text(f"# Task: {task_desc}\n\n{result}")
+            
+            asyncio.run(send_report(
+                context.bot,
+                update.effective_chat.id,
+                f"Code: {task_desc}",
+                result,
+                str(path)
+            ))
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            asyncio.run(context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"Error en Code Crew:\n{str(e)[:500]}\n\n{tb[:500]}"
+            ))
+    
+    threading.Thread(target=run_in_thread, daemon=True).start()
+
+
 async def post_init(app):
     await app.bot.set_my_commands([
         BotCommand("start", "Iniciar Ultra"),
@@ -183,6 +244,7 @@ async def post_init(app):
         BotCommand("boost", "Modo Boost (pass)"),
         BotCommand("turbo", "Modo Turbo (pass)"),
         BotCommand("research", "Investigar un tema (Research Crew)"),
+        BotCommand("code", "Desarrollar código (Code Crew)"),
     ])
 
 
@@ -197,6 +259,7 @@ def main():
     app.add_handler(CommandHandler("modes", modes))
     app.add_handler(CommandHandler(["free", "normal", "kimi", "boost", "turbo"], change_mode))
     app.add_handler(CommandHandler("research", research_command))
+    app.add_handler(CommandHandler("code", code_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot corriendo - busca tu bot en Telegram y manda /start")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
