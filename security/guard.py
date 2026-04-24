@@ -291,6 +291,19 @@ def notify(message: str):
 
 # ============= PROTECTED EXECUTION =============
 
+AUTO_APPROVE_PATHS = [
+    '/opt/ultra/docs/',
+    '/opt/ultra/examples/',
+    '/tmp/',
+]
+
+def is_auto_approved(path):
+    for ap in AUTO_APPROVE_PATHS:
+        if path.startswith(ap):
+            return True
+    return False
+
+
 def safe_execute(tool_name: str, executor_fn, params: Dict, risk: str = "safe") -> Dict:
     """
     Wrapper para ejecutar tools con todas las protecciones.
@@ -331,7 +344,14 @@ def safe_execute(tool_name: str, executor_fn, params: Dict, risk: str = "safe") 
     
     # 4. Approval para alto riesgo
     if risk == "high":
-        req_id = request_approval(
+        # Auto-approve para paths especificos
+        if tool_name == 'write_file' and params.get('path'):
+            if is_auto_approved(params['path']):
+                audit_log('auto_approved', {'tool': tool_name, 'path': params['path']})
+                risk = 'medium'  # saltar approval
+        
+        if risk == "high":
+            req_id = request_approval(
             action=tool_name,
             description=f"{tool_name}({params})",
             params=params
