@@ -1,0 +1,402 @@
+"""
+Security Layer - Protecciones para ejecucion autonoma.
+
+1. Blocklist de comandos peligrosos
+2. Audit log en archivo + BD
+3. Approval queue con Telegram
+4. Modo PANIC (pausa agentes)
+5. Rate limiting
+6. Auto-backup pre-accion destructiva
+"""
+import os
+import json
+import time
+import subprocess
+import shutil
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Dict, Optional
+import httpx
+
+from dotenv import load_dotenv
+load_dotenv("/opt/ultra/.env")
+
+# Config
+AUDIT_LOG = Path("/opt/ultra/data/audit.jsonl")
+APPROVAL_QUEUE = Path("/opt/ultra/data/approval_queue.json")
+PANIC_FILE = Path("/opt/ultra/data/PANIC_MODE")
+RATE_LIMIT_FILE = Path("/opt/ultra/data/rate_limit.json")
+BACKUP_DIR = Path("/opt/ultra/data/safety_backups")
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+BOT_TOKEN = os.getenv("TELEGRAM_ULTRA_BOT_TOKEN")
+OWNER_ID = os.getenv("TELEGRAM_OWNER_CHAT_ID")
+
+
+# ============= BLOCKLIST =============
+
+BLOCKED_PATTERNS = [
+    # Destruccion masiva
+    r"rm\s+-rf\s+/",
+    r"rm\s+-rf\s+~",
+    r"rm\s+-rf\s+\*",
+    r":\$\$\{.*\}",              # fork bomb
+    r"mkfs\.",                       # format
+    r"dd\s+if=.*of=/dev/[sh]d",      # disk write
+    r">\s*/dev/sd[a-z]",            # escritura directa
+    r"chmod\s+-R\s+777",
+    r"chown\s+-R.*root",
+    
+    # Sistema crítico
+    r"systemctl\s+disable.*ultra",
+    r"rm\s+.*\.ssh/",
+    r"echo.*>>.*\.ssh/authorized",
+    r"passwd\s",
+    r"userdel",
+    r"usermod",
+    
+    # Exfiltracion
+    r"curl.*\|.*sh",
+    r"wget.*\|.*sh",
+    r"nc\s+-l",                      # netcat listener
+    r"base64.*\|.*sh",
+    
+    # DB destruction
+    r"DROP\s+DATABASE",
+    r"TRUNCATE.*fin_",
+    r"DELETE\s+FROM.*WHERE\s+1=1",
+]
+
+
+def is_blocked(command: str) -> tuple[bool, str]:
+    """Verifica si comando esta en blocklist."""
+    import re
+    for pattern in BLOCKED_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return True, pattern
+    return False, ""
+
+
+# ============= PANIC MODE =============
+
+def is_panic_mode() -> bool:
+    """Si PANIC_MODE esta activo, bloquea TODAS las ejecuciones."""
+    return PANIC_FILE.exists()
+
+
+def activate_panic(reason: str = "manual"):
+    """Activa modo PANIC - pausa TODO."""
+    PANIC_FILE.write_text(json.dumps({
+        "activated_at": datetime.now().isoformat(),
+        "reason": reason,
+    }))
+    
+    # Notificar inmediato
+    notify(f"🚨 PANIC MODE ACTIVADO 🚨\n\nRazon: {reason}\n\nTodas las ejecuciones autonomas pausadas.")
+
+
+def deactivate_panic():
+    """Desactiva modo PANIC."""
+    if PANIC_FILE.exists():
+        PANIC_FILE.unlink()
+        notify("✅ PANIC MODE desactivado. Ejecuciones reanudadas.")
+
+
+# ============= AUDIT LOG =============
+
+def audit_log(action: str, details: Dict, user: str = "ultra"):
+    """Registra accion en log inmutable."""
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "user": user,
+        "action": action,
+        "details": details,
+    }
+    AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(AUDIT_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def get_recent_audits(limit: int = 50) -> list:
+    """Obtiene ultimas acciones."""
+    if not AUDIT_LOG.exists():
+        return []
+    
+    lines = AUDIT_LOG.read_text().strip().split("\n")
+    results = []
+    for line in lines[-limit:]:
+        try:
+            results.append(json.loads(line))
+        except:
+            pass
+    return results
+
+
+# ============= RATE LIMITING =============
+
+def check_rate_limit(tool: str, max_per_minute: int = 10) -> bool:
+    """True si se puede ejecutar, False si hay que esperar."""
+    now = time.time()
+    minute_ago = now - 60
+    
+    # Cargar historico
+    data = {}
+    if RATE_LIMIT_FILE.exists():
+        try:
+            data = json.loads(RATE_LIMIT_FILE.read_text())
+        except:
+            data = {}
+    
+    # Filtrar timestamps del ultimo minuto
+    tool_times = [t for t in data.get(tool, []) if t > minute_ago]
+    
+    if len(tool_times) >= max_per_minute:
+        return False
+    
+    # Agregar nuevo
+    tool_times.append(now)
+    data[tool] = tool_times
+    
+    RATE_LIMIT_FILE.write_text(json.dumps(data))
+    return True
+
+
+# ============= BACKUP PRE-ACCION =============
+
+def backup_before_action(target_path: str) -> Optional[Path]:
+    """Hace backup antes de modificar algo."""
+    p = Path(target_path)
+    if not p.exists():
+        return None
+    
+    backup_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{p.name}"
+    backup_path = BACKUP_DIR / backup_name
+    
+    try:
+        if p.is_file():
+            shutil.copy2(p, backup_path)
+        elif p.is_dir():
+            shutil.copytree(p, backup_path, dirs_exist_ok=True)
+        return backup_path
+    except Exception as e:
+        audit_log("backup_failed", {"target": str(p), "error": str(e)})
+        return None
+
+
+# ============= APPROVAL QUEUE =============
+
+def load_queue() -> Dict:
+    if APPROVAL_QUEUE.exists():
+        try:
+            return json.loads(APPROVAL_QUEUE.read_text())
+        except:
+            return {}
+    return {}
+
+
+def save_queue(queue: Dict):
+    APPROVAL_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+    APPROVAL_QUEUE.write_text(json.dumps(queue, indent=2, default=str))
+
+
+def request_approval(action: str, description: str, params: Dict = None) -> str:
+    """Crea una solicitud de approval y la manda por Telegram."""
+    request_id = f"req_{int(time.time())}"
+    queue = load_queue()
+    
+    queue[request_id] = {
+        "id": request_id,
+        "action": action,
+        "description": description,
+        "params": params or {},
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+        "expires_at": (datetime.now() + timedelta(minutes=10)).isoformat(),
+    }
+    save_queue(queue)
+    
+    # Notificar a Telegram
+    msg = f"🔔 APPROVAL NECESARIA\n\n"
+    msg += f"ID: {request_id}\n"
+    msg += f"Accion: {action}\n"
+    msg += f"Detalle: {description}\n\n"
+    msg += f"Responde:\n"
+    msg += f"/yes {request_id} - Aprobar\n"
+    msg += f"/no {request_id} - Rechazar\n\n"
+    msg += f"Expira en 10 min"
+    
+    notify(msg)
+    audit_log("approval_requested", queue[request_id])
+    return request_id
+
+
+def check_approval(request_id: str) -> str:
+    """Retorna: 'pending', 'approved', 'rejected', 'expired', 'unknown'."""
+    queue = load_queue()
+    
+    if request_id not in queue:
+        return "unknown"
+    
+    req = queue[request_id]
+    
+    # Check expiracion
+    expires = datetime.fromisoformat(req["expires_at"])
+    if datetime.now() > expires and req["status"] == "pending":
+        req["status"] = "expired"
+        save_queue(queue)
+        return "expired"
+    
+    return req["status"]
+
+
+def approve_request(request_id: str) -> bool:
+    queue = load_queue()
+    if request_id in queue and queue[request_id]["status"] == "pending":
+        queue[request_id]["status"] = "approved"
+        queue[request_id]["approved_at"] = datetime.now().isoformat()
+        save_queue(queue)
+        audit_log("approval_granted", {"request_id": request_id})
+        return True
+    return False
+
+
+def reject_request(request_id: str) -> bool:
+    queue = load_queue()
+    if request_id in queue and queue[request_id]["status"] == "pending":
+        queue[request_id]["status"] = "rejected"
+        queue[request_id]["rejected_at"] = datetime.now().isoformat()
+        save_queue(queue)
+        audit_log("approval_rejected", {"request_id": request_id})
+        return True
+    return False
+
+
+def wait_for_approval(request_id: str, timeout_seconds: int = 600) -> str:
+    """Espera aprobacion o rechazo (polling)."""
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        status = check_approval(request_id)
+        if status in ["approved", "rejected", "expired"]:
+            return status
+        time.sleep(2)
+    return "timeout"
+
+
+# ============= NOTIFICATIONS =============
+
+def notify(message: str):
+    """Envia notificacion por Telegram al owner."""
+    if not BOT_TOKEN or not OWNER_ID:
+        print(f"[NOTIFY] {message}")
+        return
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": OWNER_ID, "text": message},
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Notify error: {e}")
+
+
+# ============= PROTECTED EXECUTION =============
+
+def safe_execute(tool_name: str, executor_fn, params: Dict, risk: str = "safe") -> Dict:
+    """
+    Wrapper para ejecutar tools con todas las protecciones.
+    
+    risk: 'safe' | 'medium' | 'high'
+    """
+    
+    # 1. PANIC mode check
+    if is_panic_mode():
+        audit_log("blocked_panic", {"tool": tool_name, "params": params})
+        return {
+            "success": False,
+            "error": "Sistema en modo PANIC. Usa /panic_off en Telegram para reactivar.",
+            "blocked_by": "panic_mode"
+        }
+    
+    # 2. Rate limiting
+    if not check_rate_limit(tool_name, max_per_minute=30):
+        audit_log("blocked_rate_limit", {"tool": tool_name})
+        return {
+            "success": False,
+            "error": f"Rate limit excedido para {tool_name}",
+            "blocked_by": "rate_limit"
+        }
+    
+    # 3. Blocklist para comandos shell
+    if tool_name == "shell_execute":
+        command = params.get("command", "")
+        blocked, pattern = is_blocked(command)
+        if blocked:
+            audit_log("blocked_blocklist", {"command": command, "pattern": pattern})
+            notify(f"⚠️ Comando bloqueado por seguridad:\n{command}\n\nPatron: {pattern}")
+            return {
+                "success": False,
+                "error": f"Comando bloqueado por blocklist: {pattern}",
+                "blocked_by": "blocklist"
+            }
+    
+    # 4. Approval para alto riesgo
+    if risk == "high":
+        req_id = request_approval(
+            action=tool_name,
+            description=f"{tool_name}({params})",
+            params=params
+        )
+        
+        status = wait_for_approval(req_id, timeout_seconds=300)
+        
+        if status != "approved":
+            return {
+                "success": False,
+                "error": f"Approval {status}",
+                "blocked_by": "approval",
+                "request_id": req_id
+            }
+    
+    # 5. Backup pre-accion para writes
+    backup_path = None
+    if tool_name in ["write_file", "service_control"] and params.get("path"):
+        backup_path = backup_before_action(params["path"])
+    
+    # 6. Ejecutar
+    try:
+        result = executor_fn(**params)
+        
+        # Audit log exitoso
+        audit_log(tool_name, {
+            "params": params,
+            "success": True,
+            "backup": str(backup_path) if backup_path else None,
+        })
+        
+        return {
+            "success": True,
+            "result": result.to_dict() if hasattr(result, "to_dict") else result,
+            "backup_path": str(backup_path) if backup_path else None,
+        }
+    except Exception as e:
+        audit_log(tool_name, {
+            "params": params,
+            "success": False,
+            "error": str(e),
+        })
+        return {
+            "success": False,
+            "error": str(e),
+            "blocked_by": "execution_error"
+        }
+
+
+# ============= UTILS =============
+
+def get_security_status() -> Dict:
+    return {
+        "panic_mode": is_panic_mode(),
+        "total_audits": sum(1 for _ in AUDIT_LOG.open()) if AUDIT_LOG.exists() else 0,
+        "pending_approvals": sum(1 for v in load_queue().values() if v["status"] == "pending"),
+        "blocked_patterns": len(BLOCKED_PATTERNS),
+    }
