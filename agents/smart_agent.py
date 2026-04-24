@@ -48,8 +48,33 @@ def get_client():
 
 
 def get_model():
-    # Claude Opus 4.6 es el mejor para function calling multi-turn
-    return "anthropic/claude-opus-4.6"
+    """Retorna el modelo actual segun el modo del router."""
+    mode = get_current_mode()
+    # Usar tool_use que es el optimizado para function calling
+    model_id = MODELS_BY_MODE[mode].get("tool_use", MODELS_BY_MODE[mode].get("reasoning"))
+    return model_id
+
+
+def get_client():
+    """Cliente OpenAI adaptado al modelo actual (OpenRouter o BlackBox)."""
+    import os
+    from openai import OpenAI
+    
+    mode = get_current_mode()
+    model_id = MODELS_BY_MODE[mode].get("tool_use", MODELS_BY_MODE[mode].get("reasoning"))
+    
+    # Detectar si el modelo es de BlackBox
+    if model_id and model_id.startswith("blackboxai/"):
+        return OpenAI(
+            api_key=os.getenv("BLACKBOX_API_KEY"),
+            base_url="https://api.blackbox.ai/v1",
+        )
+    else:
+        # Default: OpenRouter
+        return OpenAI(
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            base_url="https://openrouter.ai/api/v1",
+        )
 
 
 SYSTEM_PROMPT = """Eres Ultra, un asistente IA ejecutor.

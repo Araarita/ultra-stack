@@ -69,26 +69,49 @@ async def change_mode(update, context):
 
 
 async def handle_message(update, context):
+    """Handler de mensajes con smart_agent + tools."""
     if not is_owner(update):
         await update.message.reply_text("Acceso denegado.")
         return
+    
     user_message = update.message.text
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
+    
     try:
-        response = letta.agents.messages.create(
-            agent_id=AGENT_ID,
-            messages=[MessageCreate(role="user", content=user_message)]
-        )
-        replies = []
-        for msg in response.messages:
-            c = getattr(msg, "content", None)
-            if c:
-                if isinstance(c, str):
-                    replies.append(c)
-                elif isinstance(c, list):
-                    for item in c:
-                        t = getattr(item, "text", None)
-                        if t: replies.append(t)
+        import sys
+        sys.path.insert(0, "/opt/ultra")
+        from agents.smart_agent import chat_with_tools
+        
+        result = chat_with_tools(user_message)
+        reply = result.get("reply", "(sin respuesta)")
+        tool_calls = result.get("tool_calls", [])
+        
+        if tool_calls:
+            tools_summary = "\n\n---\nTools ejecutadas:\n"
+            for tc in tool_calls:
+                tool_name = tc["tool"]
+                success = tc["result"].get("success", False)
+                status = "OK" if success else "FAIL"
+                tools_summary += "- " + tool_name + ": " + status + "\n"
+            full_reply = reply + tools_summary
+        else:
+            full_reply = reply
+        
+        # Enviar por chunks si es largo
+        MAX_LEN = 4000
+        if len(full_reply) <= MAX_LEN:
+            await update.message.reply_text(full_reply)
+        else:
+            for i in range(0, len(full_reply), MAX_LEN):
+                chunk = full_reply[i:i+MAX_LEN]
+                await update.message.reply_text(chunk)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        await update.message.reply_text("Error: " + str(e)[:500])
         reply_text = "\n".join(replies) if replies else "(sin respuesta)"
         if len(reply_text) > 4000:
             for i in range(0, len(reply_text), 4000):

@@ -319,24 +319,59 @@ async def handle_callback(update, context):
             "MODIFICAR: " + request_id + "\n\n" +
             "Esta opcion aun en desarrollo.\n" +
             "Por ahora: Rechaza y mandale al chat la modificacion."
-        )
-
-def main():
-    if not BOT_TOKEN:
-        logger.error("TELEGRAM_ULTRA_BOT_TOKEN no configurado")
-        return
-    logger.info(f"Iniciando Ultra Bot (Owner: {OWNER_ID})")
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("modes", modes))
-    app.add_handler(CommandHandler(["free", "normal", "kimi", "boost", "turbo"], change_mode))
-    app.add_handler(CommandHandler("research", research_command))
-    app.add_handler(CommandHandler("code", code_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("Bot corriendo - busca tu bot en Telegram y manda /start")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
+        ) async def handle_callback(update, context): def main(): 
+    """Maneja clicks en botones inline.""" if not BOT_TOKEN: from 
+    telegram import InlineKeyboardButton, InlineKeyboardMarkup 
+    logger.error("TELEGRAM_ULTRA_BOT_TOKEN no configurado") query 
+    = update.callback_query return logger.info(f"Iniciando Ultra 
+    Bot (Owner: {OWNER_ID})") app = 
+    Application.builder().token(BOT_TOKEN).post_init(post_init).build() 
+    app.add_handler(CommandHandler("start", start)) 
+    app.add_handler(CommandHandler("status", status)) 
+    app.add_handler(CommandHandler("modes", modes)) 
+    app.add_handler(CommandHandler(["free", "normal", "kimi", 
+    "boost", "turbo"], change_mode)) 
+    app.add_handler(CommandHandler("research", research_command)) 
+    app.add_handler(CommandHandler("code", code_command)) 
+    app.add_handler(MessageHandler(filters.TEXT & 
+    ~filters.COMMAND, handle_message)) logger.info("Bot corriendo 
+    - busca tu bot en Telegram y manda /start") 
+    app.run_polling(allowed_updates=Update.ALL_TYPES) await 
+    query.answer()
+    
+if __name__ == "__main__": main() if query.from_user.id != 
+    OWNER_ID:
+        await query.edit_message_text("Acceso denegado.") return
+    
+    data = query.data if ":" not in data: return
+    
+    action, request_id = data.split(":", 1)
+    
+    import sys sys.path.insert(0, "/opt/ultra") from 
+    security.guard import approve_request, reject_request, 
+    load_queue, save_queue from datetime import datetime, 
+    timedelta
+    
+    original_text = query.message.text
+    
+    if action == "approve": ok = approve_request(request_id) 
+        new_text = original_text + ("\n\n[APROBADO]" if ok else 
+        "\n\n[Error]") await query.edit_message_text(new_text)
+    elif action == "reject": ok = reject_request(request_id) 
+        new_text = original_text + ("\n\n[RECHAZADO]" if ok else 
+        "\n\n[Error]") await query.edit_message_text(new_text)
+    elif action == "snooze": queue = load_queue() if request_id 
+        in queue:
+            queue[request_id]["expires_at"] = (datetime.now() + 
+            timedelta(hours=1)).isoformat() save_queue(queue) 
+            await query.edit_message_text(original_text + 
+            "\n\n[POSPUESTO 1h]")
+    elif action == "detail": queue = load_queue() if request_id 
+        in queue:
+            req = queue[request_id] detail = "DETALLE 
+            COMPLETO\n\n" + "Params: " + str(req.get("params", 
+            {}))[:2000] await 
+            query.edit_message_text(detail[:4000])
+    elif action == "modify": await 
+        query.edit_message_text(original_text + "\n\n[MODIFICAR: 
+        manda 'modifica " + request_id + ": cambio' al chat]")

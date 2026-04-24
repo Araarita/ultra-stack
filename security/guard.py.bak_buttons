@@ -199,8 +199,8 @@ def save_queue(queue: Dict):
     APPROVAL_QUEUE.write_text(json.dumps(queue, indent=2, default=str))
 
 
-def request_approval(action, description, params=None):
-    """Crea solicitud de approval y notifica con BOTONES INLINE."""
+def request_approval(action: str, description: str, params: Dict = None) -> str:
+    """Crea una solicitud de approval y la manda por Telegram."""
     request_id = f"req_{int(time.time())}"
     queue = load_queue()
     
@@ -215,11 +215,21 @@ def request_approval(action, description, params=None):
     }
     save_queue(queue)
     
-    # Enviar con botones inline
-    notify_approval_with_buttons(request_id, action, description)
+    # Notificar a Telegram
+    msg = f"🔔 APPROVAL NECESARIA\n\n"
+    msg += f"ID: {request_id}\n"
+    msg += f"Accion: {action}\n"
+    msg += f"Detalle: {description}\n\n"
+    msg += f"Responde:\n"
+    msg += f"/yes {request_id} - Aprobar\n"
+    msg += f"/no {request_id} - Rechazar\n\n"
+    msg += f"Expira en 10 min"
     
+    notify(msg)
     audit_log("approval_requested", queue[request_id])
     return request_id
+
+
 def check_approval(request_id: str) -> str:
     """Retorna: 'pending', 'approved', 'rejected', 'expired', 'unknown'."""
     queue = load_queue()

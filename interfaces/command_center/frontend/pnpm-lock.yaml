@@ -87,6 +87,9 @@ importers:
       '@types/react-dom':
         specifier: ^19
         version: 19.2.3(@types/react@19.2.14)
+      '@types/serviceworker':
+        specifier: ^0.0.195
+        version: 0.0.195
       eslint:
         specifier: ^9
         version: 9.39.4(jiti@2.6.1)
@@ -890,6 +893,9 @@ packages:
 
   '@types/react@19.2.14':
     resolution: {integrity: sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w==}
+
+  '@types/serviceworker@0.0.195':
+    resolution: {integrity: sha512-8MSIEUR9VkCOe9OA2rPsYpEU/lmjMM5XAbJFeBbJqpgvkBjXrjYxYfAs3z0RXCBXj2FiMAFwHNy7gHDovPne5g==}
 
   '@types/set-cookie-parser@2.4.10':
     resolution: {integrity: sha512-GGmQVGpQWUe5qglJozEjZV/5dyxbOOZ0LHe/lqyWssB88Y4svNfst0uqBVscdDeIKl5Jy5+aPSvy7mI9tYRguw==}
@@ -4376,6 +4382,8 @@ snapshots:
   '@types/react@19.2.14':
     dependencies:
       csstype: 3.2.3
+
+  '@types/serviceworker@0.0.195': {}
 
   '@types/set-cookie-parser@2.4.10':
     dependencies:
