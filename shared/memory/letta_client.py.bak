@@ -1,0 +1,102 @@
+"""
+Letta Memory Client - Memoria persistente para Smart Agent
+
+Conecta con Letta container (puerto 8283) para:
+- Crear agente persistente por usuario
+- Guardar cada mensaje con contexto
+- Recuperar conversacion completa
+- Manejar memoria jerarquica
+
+Uso:
+  from shared.memory.letta_client import get_memory, save_message
+  
+  history = get_memory(user_id='erik')
+  save_message(user_id='erik', role='user', content='hola')
+"""
+import os
+import httpx
+from typing import Optional
+
+LETTA_URL = os.getenv('LETTA_URL', 'http://localhost:8283')
+DEFAULT_AGENT_NAME = 'ultra_memory'
+
+
+def get_or_create_agent(user_id: str = 'erik'):
+    """Obtener o crear agente Letta para el usuario."""
+    agent_name = f'{DEFAULT_AGENT_NAME}_{user_id}'
+    
+    try:
+        # Listar agentes existentes
+        r = httpx.get(f'{LETTA_URL}/v1/agents', timeout=10)
+        if r.status_code == 200:
+            agents = r.json()
+            for agent in agents:
+                if agent.get('name') == agent_name:
+                    return agent['id']
+        
+        # Crear nuevo agente
+        create_payload = {
+            'name': agent_name,
+            'agent_type': 'memgpt_agent',
+            'system': 'You are a helpful AI assistant with persistent memory. Remember user preferences, context from previous conversations, and provide continuity.',
+        }
+        r = httpx.post(f'{LETTA_URL}/v1/agents', json=create_payload, timeout=30)
+        if r.status_code in [200, 201]:
+            return r.json()['id']
+    except Exception as e:
+        print(f'[LETTA] Error: {e}')
+    
+    return None
+
+
+def save_to_memory(user_id: str, role: str, content: str):
+    """Guarda mensaje en memoria de Letta."""
+    agent_id = get_or_create_agent(user_id)
+    if not agent_id:
+        return False
+    
+    try:
+        # Envia mensaje al agente (Letta lo guarda automaticamente)
+        payload = {
+            'messages': [{
+                'role': role,
+                'text': content
+            }]
+        }
+        r = httpx.post(
+            f'{LETTA_URL}/v1/agents/{agent_id}/messages',
+            json=payload,
+            timeout=30
+        )
+        return r.status_code == 200
+    except Exception as e:
+        print(f'[LETTA] Save error: {e}')
+        return False
+
+
+def get_memory(user_id: str, limit: int = 20):
+    """Recupera historial reciente de la memoria."""
+    agent_id = get_or_create_agent(user_id)
+    if not agent_id:
+        return []
+    
+    try:
+        r = httpx.get(
+            f'{LETTA_URL}/v1/agents/{agent_id}/messages',
+            params={'limit': limit},
+            timeout=10
+        )
+        if r.status_code == 200:
+            messages = r.json()
+            # Formato simple para el LLM
+            history = []
+            for msg in messages[-limit:]:
+                role = msg.get('role', 'user')
+                content = msg.get('text', '')
+                if content:
+                    history.append({'role': role, 'content': content})
+            return history
+    except Exception as e:
+        print(f'[LETTA] Get error: {e}')
+    
+    return []
