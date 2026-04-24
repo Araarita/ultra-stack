@@ -14,7 +14,8 @@ load_dotenv("/opt/ultra/.env")
 from openai import OpenAI
 from tools.registry import TOOLS_REGISTRY
 from tools.secure_executor import execute_tool_secure
-from shared.llm_router.router import get_current_mode, MODELS_BY_MODE
+from shared.llm_router.router import get_current_mode, MODELS_BY_MODE, set_mode
+from shared.llm_router.auto_selector import auto_select_mode
 
 
 def get_tools_schema():
@@ -97,7 +98,23 @@ REGLAS:
 6. Responde en espanol"""
 
 
-def chat_with_tools(user_message: str, conversation_history: List = None) -> Dict:
+def chat_with_tools(user_message: str, conversation_history: List = None, auto_mode: bool = True) -> Dict:
+    # AUTO MODE SELECTOR
+    original_mode = get_current_mode()
+    mode_changed = False
+    
+    if auto_mode:
+        try:
+            decision = auto_select_mode(user_message, original_mode)
+            if decision["should_change"]:
+                suggested = decision["suggested_mode"]
+                category = decision["category"]
+                print(f"[AUTO] {original_mode} -> {suggested} (category: {category})")
+                set_mode(decision["suggested_mode"])
+                mode_changed = True
+        except Exception as e:
+            print(f"[AUTO] Error en auto-select: {e}")
+
     """Chat con Ultra usando function calling."""
     if conversation_history is None:
         conversation_history = []
