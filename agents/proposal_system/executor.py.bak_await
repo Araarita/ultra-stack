@@ -24,13 +24,13 @@ class ProposalExecutor:
             Resultado de la ejecución con estado, éxito y salida/error.
         """
         self.logger.info("Iniciando ejecución de propuesta: %s", proposal_id)
-        proposal: Proposal | None = self.store.get_by_id(proposal_id)
+        proposal: Proposal | None = await self.store.get_by_id(proposal_id)
 
         if proposal is None:
             self.logger.error("Propuesta no encontrada: %s", proposal_id)
             return {"success": False, "error": "Not found"}
 
-        if proposal.status != ProposalStatus.approved:
+        if proposal.status != ProposalStatus.APPROVED:
             self.logger.error(
                 "Propuesta no aprobada. id=%s status=%s",
                 proposal_id,
@@ -38,8 +38,8 @@ class ProposalExecutor:
             )
             return {"success": False, "error": "Not approved"}
 
-        proposal.status = ProposalStatus.executing
-        self.store.update_status(proposal.id, ProposalStatus.executing)
+        proposal.status = ProposalStatus.EXECUTING
+        await self.store.update_status(proposal.id, ProposalStatus.EXECUTING)
         self.logger.debug("Status actualizado a EXECUTING para id=%s", proposal_id)
 
         try:
@@ -66,9 +66,9 @@ class ProposalExecutor:
             returncode: int = int(process.returncode or 0)
 
             if returncode == 0:
-                proposal.status = ProposalStatus.completed
-                self.store.update_status(proposal.id, ProposalStatus.completed)
-                self.store.add_execution_log(
+                proposal.status = ProposalStatus.COMPLETED
+                await self.store.update_status(proposal.id, ProposalStatus.COMPLETED)
+                await self.store.add_execution_log(
                     proposal.id,
                     {
                         "status": "completed",
@@ -80,9 +80,9 @@ class ProposalExecutor:
                 self.logger.info("Ejecución completada id=%s", proposal_id)
                 return {"success": True, "output": stdout, "status": "completed"}
 
-            proposal.status = ProposalStatus.failed
-            self.store.update_status(proposal.id, ProposalStatus.failed)
-            self.store.add_execution_log(
+            proposal.status = ProposalStatus.FAILED
+            await self.store.update_status(proposal.id, ProposalStatus.FAILED)
+            await self.store.add_execution_log(
                 proposal.id,
                 {
                     "status": "failed",
@@ -100,8 +100,8 @@ class ProposalExecutor:
             return {"success": False, "error": stderr, "status": "failed"}
 
         except Exception as e:
-            proposal.status = ProposalStatus.failed
-            self.store.update_status(proposal.id, ProposalStatus.failed)
+            proposal.status = ProposalStatus.FAILED
+            await self.store.update_status(proposal.id, ProposalStatus.FAILED)
             self.logger.error("Excepción ejecutando id=%s error=%s", proposal_id, str(e))
             return {"success": False, "error": str(e)}
 

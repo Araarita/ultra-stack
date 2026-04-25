@@ -88,39 +88,6 @@ async def get_proposal(proposal_id: str):
 
 
 @router.post("/{proposal_id}/approve", response_model=ActionResponse)
-async def approve_proposal(proposal_id: str):
-    """Aprueba y ejecuta una propuesta sincronamente."""
-    store = ProposalStore()
-    executor = ProposalExecutor()
-    
-    p = store.get_by_id(proposal_id)
-    if not p:
-        raise HTTPException(404, "Not found")
-    
-    store.update_status(proposal_id, ProposalStatus.approved)
-    
-    try:
-        result = await executor.execute(proposal_id)
-        
-        return ActionResponse(
-            success=result.get("success", False),
-            message=f"Executed: {result.get('status', 'unknown')}",
-            data={
-                "proposal_id": proposal_id,
-                "execution_status": result.get("status", "unknown"),
-                "output": (result.get("output") or "")[:500],
-                "error": (result.get("error") or "")[:300]
-            }
-        )
-    except Exception as e:
-        import traceback
-        return ActionResponse(
-            success=False,
-            message=f"Exception: {str(e)[:200]}",
-            data={"error": str(e), "traceback": traceback.format_exc()[:500]}
-        )
-
-
 async def approve_proposal(proposal_id: str, background: BackgroundTasks):
     """Aprueba y ejecuta una propuesta."""
     store = ProposalStore()
