@@ -1,0 +1,458 @@
+PROMPT PARA BLACKBOX AI - ULTRA STACK PROPOSAL SYSTEM
+========================================================
+
+REPOSITORIO: https://github.com/Araarita/ultra-stack
+
+OBJETIVO: Implementar Proposal System estilo Google Jules
+
+========================================================
+CONTEXTO DEL PROYECTO
+========================================================
+
+Ultra Stack es un sistema multi-agente IA autonomo personal que corre 24/7 en VPS.
+
+Stack actual:
+- 16+ servicios systemd (ultra-bot, ultra-cc, ultra-cc-api, ultra-monitor, ultra-healer, ultra-learner, ultra-improver, ultra-meta, ultra-proposer, ultra-metrics)
+- 3 Docker containers (Letta, Prometheus, Grafana)
+- Framework LangChain + CrewAI
+- 7 modos LLM con auto-seleccion
+- 83+ modelos via OpenRouter + BlackBox AI
+- Smart Agent con 13 tools
+- Security Layer con approval queue
+- 5 interfaces: CLI, Telegram Bot, PWA Next.js 16, Streamlit, Grafana
+- Memoria persistente JSON
+- Owner: Erik, le gusta Python
+
+========================================================
+OBJETIVO PRINCIPAL
+========================================================
+
+Implementar un Proposal System inspirado en Google Jules donde Ultra proponga mejoras proactivamente y el usuario solo decida Si/No con botones tactiles.
+
+Filosofia: Ultra propone, tu decides, Ultra ejecuta.
+
+El sistema debe ser tan intuitivo que el usuario NO tenga que escribir nada, solo tocar botones en PWA/Telegram.
+
+========================================================
+ENTREGABLES
+========================================================
+
+1. Branch en GitHub: feature/proposal-system-v1
+2. Pull Request completo con descripcion, screenshots, checklist
+3. Codigo completo funcional
+4. Tests con >80% coverage
+5. Documentacion completa
+
+========================================================
+ESPECIFICACIONES TECNICAS
+========================================================
+
+A) BACKEND: agents/proposal_system/
+
+Crear los siguientes archivos:
+
+1) __init__.py - Package init
+
+2) models.py - Pydantic models:
+   - Proposal (todos los campos)
+   - ProposalStatus enum
+   - Category enum
+   - Impact enum
+   - RiskLevel enum
+   - ExecutionResult
+
+3) proposal_generator.py - Clase ProposalGenerator:
+   - Analiza sistema cada 30 min
+   - Usa BlackBox AI Claude Opus 4.7
+   - Genera 3-5 propuestas
+   - Categorias: capability, improvement, maintenance, insight, security, experience
+   - Respeta quiet hours 23:00-07:00 Mexico
+   
+   Cada propuesta tiene:
+   - title (max 100 chars)
+   - description (max 500 chars)
+   - benefit
+   - category, impact, effort, risk_level
+   - action_type (install, modify, create, scan, report, configure, deploy)
+   - action_code (codigo Python ejecutable)
+   - estimated_time_seconds
+   - dependencies
+   - rollback_strategy
+   - success_criteria
+
+4) proposal_executor.py - Clase ProposalExecutor:
+   - Ejecuta propuestas aprobadas
+   - Sandbox con timeout subprocess
+   - Backup/snapshot automatico
+   - Valida success_criteria
+   - Rollback automatico si falla
+   - Logging detallado
+   - Valida contra security blocklist
+
+5) proposal_store.py - Clase ProposalStore:
+   - CRUD en PostgreSQL con asyncpg
+   - Tabla proposals con indices
+   - Metodos: create, get_pending, get_by_id, update_status, add_execution_log, get_stats, delete_old
+   - Retencion: auto-delete >30 dias
+
+6) config.py - Variables de entorno:
+   - PROPOSAL_GENERATION_INTERVAL_MINUTES (default 30)
+   - PROPOSAL_MAX_PENDING (default 5)
+   - PROPOSAL_MIN_IMPACT (default medium)
+   - PROPOSAL_AUTO_APPROVE_SAFE (default false)
+   - PROPOSAL_QUIET_HOURS_START/END
+   - PROPOSAL_TIMEZONE
+
+7) scheduler.py - Scheduler async:
+   - Respeta quiet hours
+   - No genera si >5 pending
+   - Adaptativo segun tasa de aprobacion
+
+========================================================
+
+B) DATABASE MIGRATION: migrations/001_proposal_system.sql
+
+CREATE TABLE IF NOT EXISTS proposals (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title VARCHAR(100) NOT NULL,
+    description TEXT NOT NULL,
+    benefit TEXT NOT NULL,
+    category VARCHAR(20) NOT NULL,
+    impact VARCHAR(10) NOT NULL,
+    effort VARCHAR(10) NOT NULL,
+    risk_level VARCHAR(10) NOT NULL,
+    action_type VARCHAR(20) NOT NULL,
+    action_code TEXT NOT NULL,
+    estimated_time_seconds INTEGER DEFAULT 60,
+    requires_restart BOOLEAN DEFAULT FALSE,
+    requires_approval_password BOOLEAN DEFAULT FALSE,
+    dependencies JSONB DEFAULT '[]',
+    rollback_strategy TEXT,
+    success_criteria TEXT,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    responded_at TIMESTAMPTZ,
+    executed_at TIMESTAMPTZ,
+    execution_log TEXT,
+    user_feedback JSONB
+);
+
+CREATE INDEX idx_proposals_status ON proposals(status);
+CREATE INDEX idx_proposals_category ON proposals(category);
+CREATE INDEX idx_proposals_created ON proposals(created_at DESC);
+CREATE INDEX idx_proposals_impact ON proposals(impact);
+
+========================================================
+
+C) API ENDPOINTS: interfaces/command_center/backend/api.py
+
+AGREGAR (NO reemplazar archivo) estos endpoints FastAPI:
+
+GET  /api/proposals?status=pending&category=X&limit=10
+GET  /api/proposals/{id}
+POST /api/proposals/{id}/approve
+POST /api/proposals/{id}/reject
+POST /api/proposals/{id}/snooze
+POST /api/proposals/{id}/feedback
+GET  /api/proposals/stats?days=7
+POST /api/proposals/generate  (admin)
+WS   /ws/proposals  (push notifications)
+
+Cada endpoint con:
+- Type hints completos
+- Pydantic models request/response
+- Error handling explicito
+- Logging estructurado
+- Rate limiting
+
+========================================================
+
+D) FRONTEND PWA: interfaces/command_center/frontend/
+
+Crear componentes en app/components/:
+
+1) ProposalCard.tsx
+   Card estilo Jules:
+   - Title destacado
+   - Category badge con color dinamico
+   - Description
+   - Benefit highlighted verde
+   - Impact + Effort chips
+   - 3 botones grandes:
+     [Activar] primary verde
+     [No ahora] secondary gris
+     [Mas tarde] tertiary outline
+   - Tap feedback con Framer Motion
+   - Loading state
+   - Toast post-accion con Sonner
+   - ARIA labels
+
+2) ProposalFeed.tsx
+   Feed principal:
+   - Header con contador
+   - Filtros tabs: Todas, Capability, Improvement, Security
+   - Pull-to-refresh
+   - Auto-refresh cada 60s
+   - WebSocket real-time
+   - Empty state
+   - Swipe actions con react-swipeable:
+     * Swipe right = approve
+     * Swipe left = reject
+   - Sort por Impact, Recent, Category
+   - Stagger animation
+
+3) ProposalDetail.tsx
+   Modal/Sheet detalle:
+   - Descripcion completa
+   - Codigo syntax highlighted con prism-react-renderer
+   - Analisis riesgos
+   - Dependencies
+   - Rollback strategy
+   - Progress bar tiempo estimado
+   - Historial similares
+
+4) ProposalFilters.tsx
+   Filtros con Zustand
+
+5) Actualizar app/page.tsx:
+   - ProposalFeed como seccion principal
+   - Notification badge en header
+   - Shortcuts: P = abre feed, / = busca
+
+========================================================
+
+E) TELEGRAM BOT: interfaces/telegram/ultra_bot.py
+
+AGREGAR (preservar existente):
+
+Comandos:
+- /propuestas - Lista pendientes
+- /propuesta {id} - Ver detalle
+- /stats_propuestas - Estadisticas
+- /config_propuestas - Configurar
+
+Callbacks inline keyboard:
+- approve_{id}
+- reject_{id}
+- snooze_{id}_{hours}
+- details_{id}
+
+Notificacion automatica para propuestas high impact.
+
+========================================================
+
+F) PUSH NOTIFICATIONS
+
+Modificar service worker existente en PWA para:
+- Notifications con title + body
+- Icon + badge
+- Actions: [approve, reject]
+- Click abre ProposalDetail
+
+========================================================
+
+G) OBSERVABILITY
+
+Metricas Prometheus:
+- ultra_proposals_generated_total
+- ultra_proposals_approved_total
+- ultra_proposals_rejected_total
+- ultra_proposals_execution_duration_seconds
+- ultra_proposals_pending_gauge
+- ultra_proposals_success_rate
+
+Dashboard Grafana: monitoring/grafana/proposals-dashboard.json
+Panels:
+- Propuestas pendientes (stat)
+- Approval rate por categoria (pie)
+- Tiempo respuesta promedio (graph)
+- Execution success rate (gauge)
+- Historial 24h (timeline)
+
+========================================================
+
+H) SYSTEMD SERVICE: systemd/ultra-proposer.service
+
+[Unit]
+Description=Ultra Proposer Scheduler
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ultra
+Environment=PYTHONPATH=/opt/ultra
+EnvironmentFile=/opt/ultra/.env
+ExecStart=/opt/ultra/venv/bin/python3 -m agents.proposal_system.scheduler
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+
+========================================================
+
+I) TESTING: tests/proposal_system/
+
+Archivos:
+- test_generator.py
+- test_executor.py
+- test_store.py
+- test_api.py
+- test_integration.py
+
+Coverage objetivo: >80%
+Framework: pytest + pytest-asyncio + pytest-cov
+
+========================================================
+
+J) DOCUMENTATION
+
+1) Crear agents/proposal_system/README.md con:
+   - Overview + diagrama ASCII
+   - Quick start
+   - API reference con curl examples
+   - Configuration
+   - Testing
+   - Troubleshooting
+   - Examples
+
+2) Actualizar docs/04-AGENTS.md con seccion Proposal System
+
+3) Crear PROPOSAL_SYSTEM_README.md en raiz con:
+   - Resumen
+   - Features implementados (checklist)
+   - Arquitectura
+   - Quick start paso a paso
+   - Estructura de archivos
+   - Testing
+   - Metricas
+   - Configuracion
+   - Troubleshooting
+   - Changelog
+   - Info del PR
+
+========================================================
+
+K) CONFIGURATION
+
+Agregar a .env.example:
+PROPOSAL_GENERATION_INTERVAL_MINUTES=30
+PROPOSAL_MAX_PENDING=5
+PROPOSAL_MIN_IMPACT=medium
+PROPOSAL_AUTO_APPROVE_SAFE=false
+PROPOSAL_QUIET_HOURS_START=23
+PROPOSAL_QUIET_HOURS_END=7
+PROPOSAL_TIMEZONE=America/Mexico_City
+PROPOSAL_TELEGRAM_NOTIFICATIONS=true
+PROPOSAL_PUSH_NOTIFICATIONS=true
+PROPOSAL_DB_TABLE_NAME=proposals
+
+Dependencias Python (requirements.txt):
+asyncpg>=0.29.0
+pydantic>=2.0
+apscheduler>=3.10
+prometheus-client>=0.19.0
+
+Dependencias Node (package.json):
+react-swipeable
+prism-react-renderer
+framer-motion
+sonner
+
+========================================================
+CRITERIOS DE CALIDAD
+========================================================
+
+CODIGO PYTHON:
+- Type hints 100%
+- Docstrings Google style
+- Logging estructurado
+- Error handling explicito (no except bare)
+- Async/await donde aplique
+- Tests >80% coverage
+
+CODIGO TYPESCRIPT:
+- Interfaces para props
+- Sin any
+- Server Components por defecto
+- Client Components solo para interactividad
+- Optimistic UI updates
+
+UX/UI:
+- Tap response <100ms
+- Animaciones 60fps
+- Loading states en acciones async
+- Error boundaries
+- Accessibility AA (Lighthouse >95)
+
+SEGURIDAD:
+- Nunca ejecutar sin approval
+- Sanitizacion inputs
+- Rate limiting
+- Audit log completo
+- Secrets solo en .env
+
+PERFORMANCE:
+- Queries con indices
+- Connection pooling asyncpg
+- Cache Redis propuestas recientes
+- Lazy loading PWA
+- Code splitting
+
+========================================================
+REGLAS IMPORTANTES
+========================================================
+
+1. Branch: feature/proposal-system-v1 (desde main)
+
+2. NO tocar archivos existentes fuera de la lista de modificados
+
+3. NO romper funcionalidad existente
+
+4. Commits atomicos con conventional commits:
+   - feat(proposals): add proposal generator
+   - feat(proposals): implement executor
+   - feat(api): add proposals endpoints
+   - feat(ui): create proposal feed
+   - feat(telegram): add notifications
+   - test(proposals): add test suite
+   - docs(proposals): add README
+
+5. NO merges a main - solo PR para review
+
+6. Al terminar crear PROPOSAL_SYSTEM_README.md completo
+
+========================================================
+FORMATO DE PROGRESO
+========================================================
+
+Reportar cada 5-10 minutos:
+
+[PROGRESO 10%] Analizando repositorio
+[PROGRESO 20%] Creando branch
+[PROGRESO 30%] Implementando generator
+[PROGRESO 40%] Creando API endpoints
+...
+[PROGRESO 100%] PR creado: [URL]
+
+========================================================
+INSTRUCCION FINAL
+========================================================
+
+1. Clonar repo
+2. Crear branch feature/proposal-system-v1
+3. Implementar TODO segun especificaciones
+4. Testear localmente
+5. Commits incrementales
+6. Abrir PR con descripcion completa
+7. Crear PROPOSAL_SYSTEM_README.md en raiz
+8. Reportar link del PR
+
+NO preguntes antes de empezar. Tienes todo el contexto.
+
+Si tienes dudas tecnicas menores, toma decision profesional y documentala en comentarios.
+
+Si algo no encaja con el stack, adaptalo siguiendo best practices.
+
+EMPIEZA EL TRABAJO AHORA.

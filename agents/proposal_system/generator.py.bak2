@@ -1,0 +1,150 @@
+import json
+import os
+from typing import Any, List
+
+from openai import OpenAI
+
+from .models import Proposal, Category, Impact, RiskLevel
+from .store import ProposalStore
+from dotenv import load_dotenv
+load_dotenv('/opt/ultra/.env')
+
+
+
+class ProposalGenerator:
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.getenv("BLACKBOX_API_KEY")
+        if not self.api_key:
+            raise ValueError("BLACKBOX_API_KEY is required")
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url="https://api.blackbox.ai/v1",
+        )
+        self.store = ProposalStore()
+
+    async def generate(self, count: int = 3) -> list[Proposal]:
+        if count <= 0:
+            return []
+
+        prompt = self._build_prompt(count=count)
+
+        try:
+            response = self.client.chat.completions.create(
+                model="blackboxai/anthropic/claude-opus-4.7",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a senior product and engineering strategist. Return strict JSON only.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.7,
+            )
+
+            content = (response.choices[0].message.content or "").strip()
+            data = self._extract_json(content)
+
+            if isinstance(data, dict) and "proposals" in data:
+                items = data["proposals"]
+            elif isinstance(data, list):
+                items = data
+            else:
+                raise ValueError("Invalid JSON structure from model")
+
+            proposals: List[Proposal] = []
+            for item in items:
+                proposal = self._to_proposal(item)
+                if proposal is not None:
+                    proposals.append(proposal)
+
+            if len(proposals) > count:
+                proposals = proposals[:count]
+
+            return proposals
+
+        except Exception:
+            return []
+
+    def _build_prompt(self, count: int = 3) -> str:
+        return f"""
+Generate {count} high-quality startup/product proposals for the Ultra Stack context.
+
+Ultra Stack context:
+- AI-first platform strategy
+- Developer tooling, automation, and agentic workflows
+- Modern cloud-native architecture (APIs, microservices, event-driven)
+- Strong focus on measurable business impact and execution feasibility
+- B2B and prosumer opportunities preferred
+
+Return STRICT JSON only with this exact top-level format:
+{{
+  "proposals": [
+    {{
+      "title": "string",
+      "summary": "string",
+      "problem": "string",
+      "solution": "string",
+      "category": "one of {self._enum_values(Category)}",
+      "impact": "one of {self._enum_values(Impact)}",
+      "risk_level": "one of {self._enum_values(RiskLevel)}",
+      "target_users": ["string"],
+      "key_features": ["string"],
+      "go_to_market": "string",
+      "success_metrics": ["string"]
+    }}
+  ]
+}}
+
+Requirements:
+- Every proposal must include all fields above.
+- No markdown, no comments, no extra text.
+- Ensure JSON is valid and parsable.
+""".strip()
+
+    def _extract_json(self, raw: str) -> Any:
+        raw = raw.strip()
+        if raw.startswith("```"):
+            lines = [line for line in raw.splitlines() if not line.strip().startswith("```")]
+            raw = "\n".join(lines).strip()
+        return json.loads(raw)
+
+    def _to_proposal(self, item: dict) -> Proposal | None:
+        try:
+            payload = dict(item)
+
+            if "category" in payload:
+                payload["category"] = self._coerce_enum(payload["category"], Category)
+            if "impact" in payload:
+                payload["impact"] = self._coerce_enum(payload["impact"], Impact)
+            if "risk_level" in payload:
+                payload["risk_level"] = self._coerce_enum(payload["risk_level"], RiskLevel)
+
+            return Proposal(**payload)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _enum_values(enum_cls) -> str:
+        vals = []
+        for e in enum_cls:
+            vals.append(getattr(e, "value", str(e)))
+        return ", ".join(vals)
+
+    @staticmethod
+    def _coerce_enum(value: Any, enum_cls):
+        if isinstance(value, enum_cls):
+            return value
+
+        s = str(value).strip()
+        for e in enum_cls:
+            ev = str(getattr(e, "value", "")).strip()
+            if s == ev:
+                return e
+            if s.lower() == ev.lower():
+                return e
+            if s == e.name:
+                return e
+            if s.lower() == e.name.lower():
+                return e
+
+        return value
