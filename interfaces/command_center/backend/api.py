@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Set
 import httpx
-from fastapi import FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI
+from .proposals_routes import router as proposals_router, HTTPException, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
