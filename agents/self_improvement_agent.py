@@ -5,7 +5,8 @@ import subprocess
 import logging
 import re
 import json
-from datetime import datetime, timedelta
+import hashlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 class SelfImprovementAgent:
     """Agente que mejora el sistema automaticamente."""
+
+    DEDUP_WINDOW_HOURS = 24
 
     def __init__(self):
         self.client = OpenAI(
@@ -174,9 +177,51 @@ REGLAS:
         )
         return lowered.startswith(allowed_starts)
 
+    @staticmethod
+    def _compute_proposal_hash(title: str, description: str) -> str:
+        """Genera un hash estable a partir de title + description normalizados."""
+        normalized_title = (title or "").strip().lower()
+        normalized_desc = (description or "").strip().lower()
+        payload = f"{normalized_title}|{normalized_desc}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _get_recent_hashes(self, hours: int = DEDUP_WINDOW_HOURS) -> set:
+        """Devuelve el set de hashes de propuestas creadas en las ultimas N horas."""
+        recent_hashes: set = set()
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+        try:
+            data = self.store._read_data()
+        except Exception as e:
+            logger.error(f"Could not read existing proposals for dedup: {e}")
+            return recent_hashes
+
+        for item in data:
+            try:
+                created_raw = item.get("created_at")
+                created_dt = self.store._parse_datetime(created_raw) if created_raw else None
+
+                if created_dt is not None:
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    if created_dt < cutoff:
+                        continue
+
+                title = item.get("title", "") or ""
+                description = item.get("description", "") or ""
+                recent_hashes.add(self._compute_proposal_hash(title, description))
+            except Exception as e:
+                logger.debug(f"Skipping proposal during dedup scan: {e}")
+                continue
+
+        logger.info(f"Loaded {len(recent_hashes)} recent proposal hashes (window={hours}h)")
+        return recent_hashes
+
     async def create_proposals(self, raw_proposals: list) -> int:
-        """Convierte propuestas raw a objetos Proposal y guarda."""
+        """Convierte propuestas raw a objetos Proposal y guarda, evitando duplicados."""
         count = 0
+        skipped_duplicates = 0
+        recent_hashes = self._get_recent_hashes(self.DEDUP_WINDOW_HOURS)
 
         for raw in raw_proposals:
             try:
@@ -190,13 +235,28 @@ REGLAS:
                     logger.warning(f"Rejected unsafe proposal action_code: {raw.get('title', 'untitled')}")
                     continue
 
+                title = raw.get("title", "") or ""
+                description = raw.get("description", "") or ""
+                proposal_hash = self._compute_proposal_hash(title, description)
+
+                if proposal_hash in recent_hashes:
+                    skipped_duplicates += 1
+                    logger.info(
+                        f"Skipping duplicate proposal (hash={proposal_hash[:12]}): {title!r}"
+                    )
+                    continue
+
                 proposal = Proposal(**raw)
                 self.store.save(proposal)
+                recent_hashes.add(proposal_hash)
                 count += 1
-                logger.info(f"Created proposal: {proposal.title}")
+                logger.info(f"Created proposal: {proposal.title} (hash={proposal_hash[:12]})")
             except Exception as e:
                 logger.error(f"Error creating proposal: {e}")
                 continue
+
+        if skipped_duplicates:
+            logger.info(f"Anti-duplicate: skipped {skipped_duplicates} proposal(s) already seen in last {self.DEDUP_WINDOW_HOURS}h")
 
         return count
 
