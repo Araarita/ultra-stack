@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 class SelfImprovementAgent:
     """Agente que mejora el sistema automaticamente."""
 
-    DEDUP_WINDOW_HOURS = 24
+    DEDUP_WINDOW_HOURS = 48
+    DEDUP_BLOCKING_STATUSES = {"pending", "approved", "completed"}
 
     def __init__(self):
         self.client = OpenAI(
@@ -178,16 +179,21 @@ REGLAS:
         return lowered.startswith(allowed_starts)
 
     @staticmethod
-    def _compute_proposal_hash(title: str, description: str) -> str:
-        """Genera un hash estable a partir de title + description normalizados."""
+    def _compute_proposal_hash(title: str, description: str, action_code: str = "") -> str:
+        """Genera un hash estable a partir de title + description + action_code normalizados."""
         normalized_title = (title or "").strip().lower()
         normalized_desc = (description or "").strip().lower()
-        payload = f"{normalized_title}|{normalized_desc}".encode("utf-8")
+        normalized_action = (action_code or "").strip().lower()
+        payload = f"{normalized_title}|{normalized_desc}|{normalized_action}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
-    def _get_recent_hashes(self, hours: int = DEDUP_WINDOW_HOURS) -> set:
-        """Devuelve el set de hashes de propuestas creadas en las ultimas N horas."""
-        recent_hashes: set = set()
+    def _get_recent_hashes(self, hours: int = DEDUP_WINDOW_HOURS) -> dict:
+        """
+        Devuelve un dict {hash: status} de propuestas creadas en las ultimas N horas
+        cuyo status este en DEDUP_BLOCKING_STATUSES (pending, approved, completed).
+        Las rechazadas NO bloquean para permitir reintentos con mejor contexto.
+        """
+        recent_hashes: dict = {}
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         try:
@@ -196,6 +202,7 @@ REGLAS:
             logger.error(f"Could not read existing proposals for dedup: {e}")
             return recent_hashes
 
+        scanned = 0
         for item in data:
             try:
                 created_raw = item.get("created_at")
@@ -207,14 +214,24 @@ REGLAS:
                     if created_dt < cutoff:
                         continue
 
+                status = str(item.get("status", "") or "").lower()
+                if status not in self.DEDUP_BLOCKING_STATUSES:
+                    continue
+
                 title = item.get("title", "") or ""
                 description = item.get("description", "") or ""
-                recent_hashes.add(self._compute_proposal_hash(title, description))
+                action_code = item.get("action_code", "") or ""
+                h = self._compute_proposal_hash(title, description, action_code)
+                recent_hashes[h] = status
+                scanned += 1
             except Exception as e:
                 logger.debug(f"Skipping proposal during dedup scan: {e}")
                 continue
 
-        logger.info(f"Loaded {len(recent_hashes)} recent proposal hashes (window={hours}h)")
+        logger.info(
+            f"Dedup index built: {scanned} blocking proposal(s) in last {hours}h "
+            f"(statuses={sorted(self.DEDUP_BLOCKING_STATUSES)})"
+        )
         return recent_hashes
 
     async def create_proposals(self, raw_proposals: list) -> int:
@@ -237,18 +254,23 @@ REGLAS:
 
                 title = raw.get("title", "") or ""
                 description = raw.get("description", "") or ""
-                proposal_hash = self._compute_proposal_hash(title, description)
+                action_code = raw.get("action_code", "") or ""
+                proposal_hash = self._compute_proposal_hash(title, description, action_code)
 
                 if proposal_hash in recent_hashes:
+                    existing_status = recent_hashes[proposal_hash]
                     skipped_duplicates += 1
                     logger.info(
-                        f"Skipping duplicate proposal (hash={proposal_hash[:12]}): {title!r}"
+                        f"[ANTI-DUP] Skipping duplicate proposal '{title}' "
+                        f"(hash={proposal_hash[:12]}): an existing proposal with status "
+                        f"'{existing_status}' was created in the last {self.DEDUP_WINDOW_HOURS}h"
                     )
                     continue
 
                 proposal = Proposal(**raw)
                 self.store.save(proposal)
-                recent_hashes.add(proposal_hash)
+                # Marcar como pending recien creado para evitar duplicados dentro del mismo ciclo
+                recent_hashes[proposal_hash] = "pending"
                 count += 1
                 logger.info(f"Created proposal: {proposal.title} (hash={proposal_hash[:12]})")
             except Exception as e:
@@ -256,7 +278,10 @@ REGLAS:
                 continue
 
         if skipped_duplicates:
-            logger.info(f"Anti-duplicate: skipped {skipped_duplicates} proposal(s) already seen in last {self.DEDUP_WINDOW_HOURS}h")
+            logger.info(
+                f"[ANTI-DUP] Summary: skipped {skipped_duplicates} duplicate proposal(s) "
+                f"already present (pending/approved/completed) in last {self.DEDUP_WINDOW_HOURS}h"
+            )
 
         return count
 
